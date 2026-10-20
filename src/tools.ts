@@ -161,6 +161,60 @@ function representativeCalldata(tool: string, instance: InstanceDescriptor): { t
 }
 
 // ---------------------------------------------------------------------------
+// shared write-send helper (MCP-03)
+// ---------------------------------------------------------------------------
+
+/**
+ * MCP error-result shape — the same shape server.ts produces when a handler
+ * throws. A handler may also RETURN this shape directly (see
+ * executeWriteTx); server.ts passes it through without re-wrapping.
+ */
+export interface ToolErrorResult {
+  isError: true;
+  content: [{ type: 'text'; text: string }];
+}
+
+export function isErrorResult(result: unknown): result is ToolErrorResult {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError === true &&
+    Array.isArray((result as { content?: unknown }).content)
+  );
+}
+
+/**
+ * Shared send tail for all 7 write tools. The SDK sends the tx and waits for
+ * the receipt internally; when the mined receipt reports status 0 the tx
+ * REVERTED on-chain (frontrun, state move between staticCall and send, regime
+ * jump) and ethers does not throw. That must surface as an explicit isError
+ * result — never a success-shaped payload with `"status": 0` buried in it —
+ * or agent loops will treat reverted writes as executed (MCP-03). Callers
+ * must return the error result as-is, never embed it in a success object.
+ */
+export async function executeWriteTx<T>(
+  tool: string,
+  send: () => Promise<T>,
+  receiptOf: (result: T) => Pick<TransactionReceipt, 'hash' | 'status'> = (result) =>
+    result as unknown as Pick<TransactionReceipt, 'hash' | 'status'>,
+): Promise<T | ToolErrorResult> {
+  const result = await send();
+  const receipt = receiptOf(result);
+  if (receipt.status === 0) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `${tool}: transaction REVERTED on-chain (status ${receipt.status}, txHash ${receipt.hash}) — do not treat as executed`,
+        },
+      ],
+    };
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // tool table
 // ---------------------------------------------------------------------------
 
@@ -189,7 +243,7 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
             token: client.instance.token,
             totalSupply: formatStable(supply),
             minterReserve: formatStable(minterReserve),
-            // share price is 18-dec fixed point (SDK formatSharePrice divides by 1e3 — mis-scaled, not used)
+            // share price is 18-dec fixed point (matches SDK formatSharePrice since 23ca93c)
             equityPrice: formatUnits(price, 18),
             guardianPaused: guardian.paused,
             admissionGatePaused: guardian.admissionGatePaused,
@@ -328,8 +382,8 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
     fee_quote: {
       description:
         'Estimate the total tx fee (L1 data fee + L2 execution fee, DOGE) for one of the write tools on an instance, ' +
-        'using the sampled L1 fee model. Reports the current per-byte rate vs the 7.1e-5 DOGE/B baseline with a ' +
-        'regimeShift warning when it exceeds 2x. Read-only.',
+        'using the sampled L1 fee model. Reports the per-byte rate vs the 7.1e-5 DOGE/B baseline and the median ' +
+        'sampled total L1 fee vs the baseline total, with a regimeShift warning when either exceeds 2x. Read-only.',
       inputSchema: { code: sCode, tool: z.string().describe(`Write tool name: ${Object.keys(GAS_ESTIMATE).join(', ')}`) },
       handler: async ({ code, tool }: { code: string; tool: string }) => {
         const { code: c, instance } = clientFor(config, code);
@@ -386,7 +440,9 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
           };
         }
         assertFeeRegime(quote);
-        const receipt = await client.mint(signer, posAddr, amountBase);
+        const sent = await executeWriteTx('mint', () => client.mint(signer, posAddr, amountBase));
+        if (isErrorResult(sent)) return sent;
+        const receipt = sent;
         const fee = await feeFromReceipt(config, receipt);
         const after = await client.positionState(posAddr);
         return {
@@ -435,7 +491,8 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
           };
         }
         assertFeeRegime(quote);
-        const result = await client.challenge(signer, posAddr, sizeBase, bidBase);
+        const result = await executeWriteTx('launch_challenge', () => client.challenge(signer, posAddr, sizeBase, bidBase), (r) => r.receipt);
+        if (isErrorResult(result)) return result;
         const fee = await feeFromReceipt(config, result.receipt);
         return {
           tool: 'launch_challenge', code: c, dryRun: false, txSent: true, signerRole: 'bot', signerAddress,
@@ -482,7 +539,8 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
           };
         }
         assertFeeRegime(quote);
-        const receipt = await client.bid(signer, index, sizeBase, postpone);
+        const receipt = await executeWriteTx('place_bid', () => client.bid(signer, index, sizeBase, postpone));
+        if (isErrorResult(receipt)) return receipt;
         const fee = await feeFromReceipt(config, receipt);
         return {
           tool: 'place_bid', code: c, dryRun: false, txSent: true, signerRole: 'bot', signerAddress,
@@ -601,7 +659,8 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
           };
         }
         assertFeeRegime(quote);
-        const result = await client.openPosition(signer, params);
+        const result = await executeWriteTx('open_position', () => client.openPosition(signer, params), (r) => r.receipt);
+        if (isErrorResult(result)) return result;
         const fee = await feeFromReceipt(config, result.receipt);
         return {
           tool: 'open_position', code: c, dryRun: false, txSent: true, signerRole: 'treasury', signerAddress,
@@ -651,12 +710,14 @@ async function guardianTool(config: McpConfig, tool: 'guardian_pause' | 'guardia
     };
   }
   assertFeeRegime(quote);
-  const receipt =
+  const receipt = await executeWriteTx(tool, () =>
     tool === 'guardian_pause'
-      ? await client.guardianPause(signer)
+      ? client.guardianPause(signer)
       : tool === 'guardian_schedule_unpause'
-        ? await client.guardianScheduleUnpause(signer)
-        : await client.guardianUnpause(signer);
+        ? client.guardianScheduleUnpause(signer)
+        : client.guardianUnpause(signer),
+  );
+  if (isErrorResult(receipt)) return receipt;
   const fee = await feeFromReceipt(config, receipt);
   return {
     tool, code, dryRun: false, txSent: true, signerRole: 'guardian', signerAddress,

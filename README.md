@@ -13,7 +13,7 @@ Built on the [`@dogeforex/sdk`](../dogeforex-sdk-ts) TypeScript SDK
 npm install
 npm run build        # tsc -> dist (ESM, strict)
 npm run typecheck    # tsc --noEmit
-npm test             # live read-only smoke test vs the Chikyu testnet (vitest)
+npm test             # offline unit tests + live read-only smoke test vs the Chikyu testnet (vitest)
 ```
 
 ## Run
@@ -50,6 +50,7 @@ All diagnostics go to **stderr** — stdout carries the MCP protocol.
 | `DOGEFOREX_TREASURY_KEY` | — | signer for `mint`, `open_position` |
 | `DOGEFOREX_GUARDIAN_KEY` | — | signer for `guardian_pause` / `guardian_schedule_unpause` / `guardian_unpause` |
 | `DOGEFOREX_BOT_KEY` | — | signer for `launch_challenge`, `place_bid` |
+| `DOGEFOREX_BASELINE_TOTAL` | — | optional: baseline **total** L1 fee (DOGE) for the fee-regime abort guard; when unset, derived once as 0.04 (documented fixed component) + 7.1e-5 DOGE/B × the typical calldata size of the first sample batch, then reused |
 
 Signers are hex private keys with a `0x` prefix, one per role. They are
 **never committed, logged, echoed in tool output, or placed in error
@@ -68,12 +69,21 @@ DogeOS Chikyu receipts carry an L1 data fee in the raw `l1Fee` field; ethers'
   perByte · bytes` fitted over recent mined transactions (the GasPriceOracle
   predeploy is not wired on this chain, so the regime is sampled from chain
   data; the L2 component uses a static per-tool gas estimate — it is small
-  next to the L1 data fee);
-- enforces the hard ops rule before **sending** any write: if the sampled
-  marginal per-byte rate exceeds **2× the 7.1e-5 DOGE/B baseline** (the
-  2026-10-14 spike twice aborted real deploys), the tool aborts with
-  `fee regime shift … retry later`. `fee_quote` always reports the rate,
-  the ratio, and a `regimeShift` warning flag without aborting.
+  next to the L1 data fee). The fee is **fixed-dominant**: typically ~0.04
+  DOGE fixed per tx plus the per-byte term (~0.04–0.09 total for ordinary
+  writes);
+- enforces the hard ops rule before **sending** any write — a write aborts
+  with `fee regime shift … retry later` when **either** guard exceeds 2×
+  baseline (MCP-01/02): the sampled marginal per-byte rate vs the
+  **7.1e-5 DOGE/B baseline** (the 2026-10-14 spike twice aborted real
+  deploys), **or** the median sampled **total** L1 fee vs the baseline
+  total (`DOGEFOREX_BASELINE_TOTAL`, default derived as the 0.04 DOGE
+  documented fixed component + 7.1e-5/B × the typical calldata size from the
+  first sample batch). The total guard catches pure fixed-fee spikes — the
+  documented ~12× event — that leave the slope looking normal. The fit
+  rejects outliers beyond 2.5× the running median and fails closed on fewer
+  than 8 inlier samples. `fee_quote` always reports both ratios and a
+  `regimeShift` warning flag without aborting.
 
 ## Tools
 
@@ -115,11 +125,6 @@ decimals (wDOGE is 8-dec; MOFX 18-dec).
 
 ## Known deviations
 
-- **SDK `formatSharePrice` is mis-scaled** (divides by `10^3`; on-chain share
-  prices are 18-dec fixed point — `3e18 == 3.0` per the SDK's own docstring and
-  the deployment registry). This server formats equity prices with
-  `formatUnits(price, 18)` instead. Flagged for the SDK repo; not patched here
-  since the SDK is consumed as a pinned sibling dependency.
 - The L1 fee quote samples recent mined transactions
   (`l1Fee ≈ fixed + perByte·bytes`) because the OP-stack GasPriceOracle
   predeploy is not wired on Chikyu (calls return empty). Sampled quotes match
@@ -127,10 +132,19 @@ decimals (wDOGE is 8-dec; MOFX 18-dec).
   The L2 component uses static per-tool gas estimates — immaterial next to the
   dominant L1 data fee on this chain.
 
-## Smoke test
+## Tests
 
-`npm test` (vitest) instantiates the tool handlers directly (no stdio) and
-runs `list_instances`, `instance_state(EUR)`, and `fee_quote(EUR, mint)`
+`npm test` (vitest) runs two suites:
+
+- **offline unit tests** (no network): fee-regime math — synthetic sample
+  batches covering the slope and total guards, 12×-spike outlier rejection,
+  and the fail-closed paths (`test/fee-regime.test.ts`); and the write path
+  with the SDK client and chain sampler mocked at the module boundary —
+  reverted on-chain writes must return an `isError` result, never a
+  success-shaped payload (`test/write-path.test.ts`).
+- **live smoke test** against the testnet (read-only): instantiates the tool
+  handlers directly (no stdio) and
+  runs `list_instances`, `instance_state(EUR)`, and `fee_quote(EUR, mint)`
 against the live testnet, read-only. It also verifies that write tools called
 without signer env vars fail fast, naming the missing variable, without
 touching the chain. The EUR guardian may be paused intermittently during ops
