@@ -1,9 +1,9 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { JsonRpcProvider, Wallet } from 'ethers';
 import {
   CURRENCY_CODES,
-  loadRegistry,
+  parseRegistry,
   type CurrencyCode,
   type Registry,
 } from '@dogeforex/sdk';
@@ -44,7 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
   if (!existsSync(registryPath)) {
     throw new Error(`DOGEOS_REGISTRY_PATH: registry file not found: ${registryPath} — set DOGEOS_REGISTRY_PATH to a dogeforex.registry/v2 JSON file`);
   }
-  const registry = loadRegistry(registryPath);
+  const registry = parseRegistry(readFileSync(registryPath, 'utf8'));
   const provider = new JsonRpcProvider(rpcUrl, registry.chainId, { staticNetwork: true });
 
   const signers = {} as Record<Role, Wallet | null>;
