@@ -35,7 +35,7 @@ export function toToolResult(result: unknown): ToolResponse {
 }
 
 export function createMcpServer(config: McpConfig): McpServer {
-  const server = new McpServer({ name: 'dogeforex-mcp', version: '0.1.0' });
+  const server = new McpServer({ name: 'dogeforex-mcp', version: '0.2.0' });
   const tools = buildTools(config);
   for (const [name, def] of Object.entries(tools)) {
     server.registerTool(

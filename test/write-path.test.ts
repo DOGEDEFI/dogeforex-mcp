@@ -45,9 +45,44 @@ vi.mock('@dogeforex/sdk', async (importOriginal) => {
     // The mocked send path: SDK sends and waits internally, then returns the
     // mined receipt — here one whose wait() resolved to status 0 (reverted).
     createClient: () => ({
-      position: () => ({}),
-      positionState: async () => ({ minted: 1_000_000_000_000_000_000n, availableForMinting: 500_000_000_000_000_000n }),
-      positionDerived: async () => ({ mintingFeePPM: 0n }),
+      position: () => ({ collateral: async () => '0x00000000000000000000000000000000000000aa' }),
+      positionState: async () => ({
+        address: '0x0000000000000000000000000000000000000000',
+        owner: '0x0000000000000000000000000000000000000001',
+        collateral: '0x00000000000000000000000000000000000000aa',
+        price: 2n * 10n ** 30n,
+        limit: 100_000n * 10n ** 18n,
+        minted: 1_000_000_000_000_000_000n,
+        availableForMinting: 500_000_000_000_000_000n,
+        minimumCollateral: 3_500n * 10n ** 6n,
+        challengedAmount: 100n * 10n ** 6n,
+        challengePeriod: 86_400n,
+        start: 1n,
+        cooldown: 2n,
+        expiration: 1_900_000_000n,
+        original: '0x0000000000000000000000000000000000000000',
+        isClosed: false,
+        reserveContribution: 200_000n,
+        riskPremiumPPM: 5_000n,
+        annualInterestPPM: 25_000n,
+      }),
+      positionDerived: async () => ({
+        mintingFeePPM: 0n,
+        annualInterestPPM: 25_000n,
+        reserveContributionPPM: 200_000n,
+        feeFor: () => 0n,
+        reserveFor: (value: bigint) => value / 5n,
+      }),
+      isMintable: async () => true,
+      listChallenges: async () => [{
+        index: 7n,
+        challenger: '0x0000000000000000000000000000000000000001',
+        position: '0x0000000000000000000000000000000000000000',
+        size: 100n * 10n ** 6n,
+        start: 1n,
+        deadline: 86_401n,
+        active: true,
+      }],
       guardianState: async () => ({
         guardian: '0x00000000000000000000000000000000000000aa',
         paused: false,
@@ -58,6 +93,7 @@ vi.mock('@dogeforex/sdk', async (importOriginal) => {
       mint: async () => h.receipts.mint,
       guardianPause: async () => h.receipts.guardianPause,
     }),
+    attachToken: () => ({ decimals: async () => 6n }),
     attachPosition: () => ({
       mint: {
         staticCall: async () => undefined,
@@ -94,7 +130,7 @@ const registryPath = resolve(here, '../../dogeforex-protocol/deployments/k9usd.c
 // Explicit env: fake role keys (validated, never committed), real registry
 // file (sibling repo), RPC URL pointing nowhere — the provider is swapped for
 // a stub below so nothing ever touches the network.
-const config = loadConfig({
+const config = await loadConfig({
   DOGEOS_RPC_URL: 'http://127.0.0.1:9',
   DOGEOS_REGISTRY_PATH: registryPath,
   DOGEFOREX_TREASURY_KEY: KEY_SHAPED,
@@ -163,6 +199,21 @@ describe('write path: reverted on-chain writes (MCP-03, offline)', () => {
     expect(result.txHash).toBe(OK_HASH);
     expect(result.dryRun).toBe(false);
     expect((result.fee as Record<string, string>).totalFeeDoge).toBeDefined();
+  });
+
+  it('legacy position and challenge reads format collateral amounts with collateral decimals', async () => {
+    const position = await tools.position_state!.handler({
+      code: 'USD',
+      positionAddress: '0x0000000000000000000000000000000000000000',
+    }) as any;
+    expect(position.collateralDecimals).toBe(6);
+    expect(position.minimumCollateral).toBe('3500.0');
+    expect(position.challengedAmount).toBe('100.0');
+    expect(position.liquidationPrice).toBe('2.0');
+
+    const challenges = await tools.list_challenges!.handler({ code: 'USD' }) as any;
+    expect(challenges.challenges[0].collateralDecimals).toBe(6);
+    expect(challenges.challenges[0].size).toBe('100.0');
   });
 
   it('server wrapper passes an isError handler result through without double-wrapping', async () => {

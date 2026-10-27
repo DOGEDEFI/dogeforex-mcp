@@ -23,10 +23,11 @@ import {
   type OpenPositionParams,
   type PositionState,
 } from '@dogeforex/sdk';
-import type { McpConfig } from './config.js';
+import type { LegacyMcpConfig, McpConfig } from './config.js';
 import { requireCode, requireSigner } from './config.js';
 import { assertFeeRegime, quoteFee, sampleFeeModel } from './fee-regime.js';
 import type { FeeQuote } from './fee-regime.js';
+import { buildV2Tools } from './v2-tools.js';
 
 export interface ToolDef {
   description: string;
@@ -76,19 +77,19 @@ const sDryRun = z.boolean().default(true).describe('true (default): staticCall o
 // helpers
 // ---------------------------------------------------------------------------
 
-function clientFor(config: McpConfig, raw: string): { client: DogeForexClient; code: CurrencyCode; instance: InstanceDescriptor } {
+function clientFor(config: LegacyMcpConfig, raw: string): { client: DogeForexClient; code: CurrencyCode; instance: InstanceDescriptor } {
   const code = requireCode(config.registry, raw);
   const instance = config.registry.instances[code];
   return { client: createClient(instance, config.provider), code, instance };
 }
 
-async function feeFromReceipt(config: McpConfig, receipt: TransactionReceipt) {
+async function feeFromReceipt(config: LegacyMcpConfig, receipt: TransactionReceipt) {
   // L1-inclusive helper — never receipt.fee (L2-only on this chain).
   const { l2Fee, l1Fee, total } = await totalTxFee(config.provider, receipt.hash);
   return { l1FeeDoge: formatDoge(l1Fee), l2FeeDoge: formatDoge(l2Fee), totalFeeDoge: formatDoge(total) };
 }
 
-async function quoteWriteTx(config: McpConfig, populated: { data?: string }, gasEstimate: bigint): Promise<FeeQuote> {
+async function quoteWriteTx(config: LegacyMcpConfig, populated: { data?: string }, gasEstimate: bigint): Promise<FeeQuote> {
   const model = await sampleFeeModel(config.provider);
   const feeData = await config.provider.getFeeData();
   const data = typeof populated.data === 'string' ? populated.data : '0x';
@@ -103,12 +104,13 @@ async function fmtPositionState(client: DogeForexClient, p: PositionState) {
     address: p.address,
     owner: p.owner,
     collateral: p.collateral,
+    collateralDecimals,
     liquidationPrice: formatUnits(p.price, priceDecimals),
     limit: formatStable(p.limit),
     minted: formatStable(p.minted),
     availableForMinting: formatStable(p.availableForMinting),
-    minimumCollateral: formatStable(p.minimumCollateral),
-    challengedAmount: formatStable(p.challengedAmount),
+    minimumCollateral: formatUnits(p.minimumCollateral, collateralDecimals),
+    challengedAmount: formatUnits(p.challengedAmount, collateralDecimals),
     challengePeriodSeconds: p.challengePeriod.toString(),
     start: formatTimestamp(p.start),
     cooldownEnd: formatTimestamp(p.cooldown),
@@ -219,6 +221,10 @@ export async function executeWriteTx<T>(
 // ---------------------------------------------------------------------------
 
 export function buildTools(config: McpConfig): Record<string, ToolDef> {
+  return config.protocolGeneration === 'v2' ? buildV2Tools(config) : buildLegacyTools(config);
+}
+
+function buildLegacyTools(config: LegacyMcpConfig): Record<string, ToolDef> {
   const tools: Record<string, ToolDef> = {
     // ------------------------------------------------------------- reads ---
 
@@ -364,16 +370,21 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
         const { client } = clientFor(config, code);
         const filter = position ? getAddress(position) : null;
         const all = await client.listChallenges();
-        const rows = all
+        const rows = await Promise.all(all
           .filter((ch) => (filter ? ch.position.toLowerCase() === filter.toLowerCase() : true))
-          .map((ch) => ({
-            challengeNumber: ch.index.toString(),
-            challenger: ch.challenger,
-            position: ch.position,
-            size: formatStable(ch.size),
-            start: formatTimestamp(ch.start),
-            deadline: formatTimestamp(ch.deadline),
-            active: ch.active,
+          .map(async (ch) => {
+            const collateral = await client.position(ch.position).collateral();
+            const collateralDecimals = Number(await attachToken(collateral, config.provider).decimals());
+            return {
+              challengeNumber: ch.index.toString(),
+              challenger: ch.challenger,
+              position: ch.position,
+              collateralDecimals,
+              size: formatUnits(ch.size, collateralDecimals),
+              start: formatTimestamp(ch.start),
+              deadline: formatTimestamp(ch.deadline),
+              active: ch.active,
+            };
           }));
         return { code: requireCode(config.registry, code), count: rows.length, challenges: rows };
       },
@@ -681,7 +692,7 @@ export function buildTools(config: McpConfig): Record<string, ToolDef> {
 // guardian write triad
 // ---------------------------------------------------------------------------
 
-async function guardianTool(config: McpConfig, tool: 'guardian_pause' | 'guardian_schedule_unpause' | 'guardian_unpause', rawCode: string, dryRun: boolean) {
+async function guardianTool(config: LegacyMcpConfig, tool: 'guardian_pause' | 'guardian_schedule_unpause' | 'guardian_unpause', rawCode: string, dryRun: boolean) {
   const signer = requireSigner(config, 'guardian', tool);
   const signerAddress = await signer.getAddress();
   const { client, code, instance } = clientFor(config, rawCode);

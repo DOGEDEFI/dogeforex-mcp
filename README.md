@@ -1,28 +1,32 @@
 # dogeforex-mcp
 
-MCP (Model Context Protocol) server that lets AI agents operate the
-[DogeForex](../dogeforex-protocol) multi-instance stablecoin protocol on the
-**DogeOS Chikyu testnet** (chainId `6281971`, OP-stack L2, gas in tDOGE).
+MCP (Model Context Protocol) server for the International Multicurrency
+Framework (IMF), extending Frankencoin mechanics across independent currency
+systems. Version **0.2.0** has two deliberately separate protocol paths:
 
-Built on the [`@dogeforex/sdk`](../dogeforex-sdk-ts) TypeScript SDK
-(`file:../dogeforex-sdk-ts`, imports from its built `dist`).
+- **Protocol V2:** exact, provider-only reads and planning through
+  `@dogeforex/sdk/v2`. No guardian/bootstrap compatibility layer, signer,
+  transaction simulation, or writes.
+- **Legacy V1:** the original registry, guardian/bootstrap reads, fee model, and
+  signer/write tools remain available separately. Its
+  `dogeforex.registry/v2` schema label is a legacy registry-schema version; it
+  does **not** mean protocol V2.
 
-## Install & build
+The SDK is linked from `../dogeforex-sdk-ts` and imported from its built `dist`.
+No real V2 deployment or registry is supplied with this repository. Synthetic
+fixtures and mocked RPC in the tests are not live deployment verification.
+
+## Install, verify, and run
 
 ```sh
 npm install
+npm run typecheck
+npm test             # offline by default; no RPC or live writes required
 npm run build        # tsc -> dist (ESM, strict)
-npm run typecheck    # tsc --noEmit
-npm test             # offline unit tests + live read-only smoke test vs the Chikyu testnet (vitest)
+node dist/index.js   # MCP over stdio
 ```
 
-## Run
-
-```sh
-node dist/index.js            # or: npm start  /  npx dogeforex-mcp (when packaged)
-```
-
-The server speaks MCP over **stdio**. Wire it into an MCP client, e.g.:
+All diagnostics go to **stderr**; stdout carries MCP. Example client config:
 
 ```json
 {
@@ -31,126 +35,275 @@ The server speaks MCP over **stdio**. Wire it into an MCP client, e.g.:
       "command": "node",
       "args": ["/absolute/path/to/dogeforex-mcp/dist/index.js"],
       "env": {
-        "DOGEOS_REGISTRY_PATH": "/absolute/path/to/dogeforex-protocol/deployments/k9usd.chikyu.json"
+        "DOGEOS_REGISTRY_PATH": "/absolute/path/to/USD_V2Registry.json",
+        "DOGEOS_RPC_URL": "https://rpc.example.invalid"
       }
     }
   }
 }
 ```
 
-All diagnostics go to **stderr** — stdout carries the MCP protocol.
+Replace the example RPC with the endpoint for the registry's actual network.
+The server checks the registry network key and chain ID independently; a matching
+chain ID alone never identifies protocol V2.
 
-## Configuration (env vars only)
+## Registry configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DOGEOS_RPC_URL` | `https://rpc.testnet.dogeos.com` | Chikyu RPC endpoint |
-| `DOGEOS_REGISTRY_PATH` | `../dogeforex-protocol/deployments/k9usd.chikyu.json` (cwd-relative; existence validated at startup) | schema-v2 deployment registry |
-| `DOGEFOREX_DEPLOYER_KEY` | — | optional signer (validated if set) |
-| `DOGEFOREX_TREASURY_KEY` | — | signer for `mint`, `open_position` |
-| `DOGEFOREX_GUARDIAN_KEY` | — | signer for `guardian_pause` / `guardian_schedule_unpause` / `guardian_unpause` |
-| `DOGEFOREX_BOT_KEY` | — | signer for `launch_challenge`, `place_bid` |
-| `DOGEFOREX_BASELINE_TOTAL` | — | optional: baseline **total** L1 fee (DOGE) for the fee-regime abort guard; when unset, derived once as 0.04 (documented fixed component) + 7.1e-5 DOGE/B × the typical calldata size of the first sample batch, then reused |
+| `DOGEOS_RPC_URL` | `https://rpc.testnet.dogeos.com` | JSON-RPC endpoint; must match the selected registry chain |
+| `DOGEOS_REGISTRY_PATH` | `../dogeforex-protocol/deployments/k9usd.chikyu.json` (cwd-relative) | Legacy default, or an explicitly supplied protocol-V2 source |
+| `DOGEFOREX_DEPLOYER_KEY` | — | Legacy deployer signer only |
+| `DOGEFOREX_TREASURY_KEY` | — | Legacy signer for `mint`, `open_position` |
+| `DOGEFOREX_GUARDIAN_KEY` | — | Legacy signer for the three guardian tools |
+| `DOGEFOREX_BOT_KEY` | — | Legacy signer for `launch_challenge`, `place_bid` |
+| `DOGEFOREX_BASELINE_TOTAL` | — | Optional legacy total-L1-fee baseline in DOGE |
 
-Signers are hex private keys with a `0x` prefix, one per role. They are
-**never committed, logged, echoed in tool output, or placed in error
-messages** (an error-message scrubber also strips anything that looks like a
-64-hex secret). If a write tool is called without its signer env var, it
-returns a clean error naming the missing variable. The server never reads
-`~/.dogeforex/keys.json` — env vars are the only key source.
+The legacy default behavior is unchanged. An explicit V2 path can be:
 
-## Fee model & the fee-regime abort rule
+1. one deployer artifact containing `linkedData`;
+2. a bare `linkedData` JSON object;
+3. an array of V2 artifacts; or
+4. a directory, from which the SDK loads only `*_V2Registry.json`.
 
-DogeOS Chikyu receipts carry an L1 data fee in the raw `l1Fee` field; ethers'
-`receipt.fee` is L2-only and **must not** be used. This server:
+V2 loading uses `detectProtocolRegistry`, `parseV2Registry`, and the Node
+`loadProtocolRegistry` API. Staged subsets are supported: requests are limited to
+the currency codes actually present. Missing files, empty directories, mixed or
+invalid artifacts, and unknown formats produce errors describing both legacy and
+V2 input forms. A V1 registry is never substituted for V2.
 
-- reports mined-tx fees via the SDK's L1-inclusive `totalTxFee` helper;
-- quotes prospective fees from a sampled model `l1Fee ≈ fixed +
-  perByte · bytes` fitted over recent mined transactions (the GasPriceOracle
-  predeploy is not wired on this chain, so the regime is sampled from chain
-  data; the L2 component uses a static per-tool gas estimate — it is small
-  next to the L1 data fee). The fee is **fixed-dominant**: typically ~0.04
-  DOGE fixed per tx plus the per-byte term (~0.04–0.09 total for ordinary
-  writes);
-- enforces the hard ops rule before **sending** any write — a write aborts
-  with `fee regime shift … retry later` when **either** guard exceeds 2×
-  baseline (MCP-01/02): the sampled marginal per-byte rate vs the
-  **7.1e-5 DOGE/B baseline** (the 2026-10-14 spike twice aborted real
-  deploys), **or** the median sampled **total** L1 fee vs the baseline
-  total (`DOGEFOREX_BASELINE_TOTAL`, default derived as the 0.04 DOGE
-  documented fixed component + 7.1e-5/B × the typical calldata size from the
-  first sample batch). The total guard catches pure fixed-fee spikes — the
-  documented ~12× event — that leave the slope looking normal. The fit
-  rejects outliers beyond 2.5× the running median and fails closed on fewer
-  than 8 inlier samples. `fee_quote` always reports both ratios and a
-  `regimeShift` warning flag without aborting.
+**Signer envs are never needed or validated for V2 reads.** They are parsed only
+on the legacy path. Legacy keys must be `0x`-prefixed 64-character hex, are never
+logged or returned, and error messages defensively redact key-shaped strings.
 
-## Tools
+## V2 output contract
 
-Amounts are human-unit decimal strings (e.g. `"3500"`), parsed with the SDK's
-`parseStable`/`parseUnits`; results are reported in human units.
+Every V2 snapshot includes its source block. Calls within an SDK snapshot are
+pinned to that block; different module snapshots in `list_instances` and
+`instance_state` each carry their own source block. Failed reads, wrong chains,
+missing bytecode, malformed responses, and link mismatches remain errors—they
+are not converted to zero balances or successful checks.
 
-### Read tools (no signer)
+Read tools return:
+
+- `snapshot`: the SDK model with every bigint represented as a raw integer
+  string;
+- `formatted`: exact human views, generally
+  `{ "raw": "1000000", "value": "1.0", "decimals": 6, "unit": "sUSDC" }`;
+- `sourceBlock`: number, hash, raw Unix timestamp, and ISO timestamp;
+- `transactionSimulation: "not_performed"`; and
+- protocol generation, network key, chain ID, and currency code where applicable.
+
+No raw money, price, quote, vote, or bridge capacity is converted through
+`Number`. Amount inputs are unsigned human decimal strings. Scientific notation,
+signs, malformed values, and excess precision are rejected. Seconds, absolute
+timestamps, challenge indices, and raw PPM inputs are decimal integer strings.
+
+| Value | Exact unit used by V2 tools |
+|---|---|
+| Local token supply, debt, gross/usable mint, repayment, opening fee | 18 decimals; local token symbol |
+| Position collateral balance/minimum/challenged/withdrawal | Position collateral's actual decimals and symbol |
+| Liquidation, challenge, and expired-purchase prices | `36 - collateralDecimals` decimals; local per whole collateral |
+| Equity shares and share price | 18 decimals; price is local per share |
+| Savings balances/interest and equity investment/proceeds | Local 18-decimal units |
+| PPM fields | Raw millionths; formatted `value` is percent (`20000` -> `2.0`) |
+| Source bridge amounts, balances, allowances, and credits | Source token's actual decimals and symbol |
+| Bridge limit/minted/capacity/burn/remainder | Local 18-decimal units |
+| Governance votes | Time-weighted 18-decimal units; relative votes also have raw form |
+| Cooldowns, durations, deadlines, expiry, horizon | Unix seconds; absolute times also include ISO form |
+
+`eligible` and caller-dependent funding/approval fields can be `true`, `false`,
+or `null`. Omitting a caller makes caller-dependent checks **unknown** (`null`);
+it never implies authorization. Eligibility is derived from view reads, not from
+a nonpersistent transaction simulation, signing, or an execution guarantee.
+
+## V2 read tools
+
+The three existing instance/position tools support V2 directly. New V2-specific
+tools use a `v2_` prefix so legacy method semantics remain separate.
+
+| Tool | Required arguments | Optional arguments | Purpose |
+|---|---|---|---|
+| `list_instances` | — | — | Current token, five-minter, source bridge, savings, and equity reads for every supplied instance; deployment evidence is separate |
+| `instance_state` | `code` | — | Contracts and the same current module reads for one instance, plus constructor/transaction/postcondition evidence |
+| `position_state` | `code`, `positionAddress` | `caller`, `recipient`, `grossAmount` or `usableAmount` | Position state, expiry/expired price, exact collateral units, mint quote, and complete eligibility |
+| `v2_verify` | `code` | — | Chain ID, bytecode, metadata, source decimals, and cross-contract link verification |
+| `v2_new_position` | `code`, `caller`, `collateralToken`, `collateralDecimals`, `minCollateral`, `initialCollateral`, `mintingMaximum`, `initPeriodSeconds`, `durationSeconds`, `challengePeriodSeconds`, `riskPremiumPPM`, `liquidationPrice`, `reserveContributionPPM` | `plannedMintAmount` | All `openPosition` terms, static issues/bounds, opening-fee/collateral funding, illustrative quote, and separately scoped planned-mint review |
+| `v2_clone_position` | `code`, `parent`, `collateralFunder`, `childOwner`, `initialCollateral`, `initialMint`, `expiration` | — | Inherited parent terms, funder/owner funding, original family capacity, and absolute child-expiration quote |
+| `v2_position_mint` | `code`, `position` | `caller`, `recipient`, `grossAmount` or `usableAmount` | Existing-position mint state and exact forward/inverse quote with full eligibility |
+| `v2_repayment` | `code`, `position` | `caller`, `amount` | Wallet payment versus gross-debt reduction, assigned reserve, funding, and roller full candidate |
+| `v2_withdrawal` | `code`, `position`, `amount` | `caller` | Exact collateral withdrawal, post-withdrawal backing, and closure state; separate from repayment |
+| `v2_challenge` | `code`, `challengeIndex` | — | One explicit challenge record, size/price, first-phase deadline and active flag |
+| `v2_bridge` | `code` | `account`, `mintSourceAmount` or `burnLocalAmount`, `credit` | Source/local bridge state, cap/horizon/credits, funding, and mint/burn plan |
+| `v2_savings` | `code` | `account` | Current/next rates, clocks, ticks, interest, deposit acceptance, and lock state |
+| `v2_equity` | `code` | `account`, `investment`, `redemptionShares` | Share price/supply, holding/redemption state, investment and redemption view quotes |
+| `v2_governance` | `code`, `caller` | `helpers` | Own/delegated/total votes and strict greater-than-2% qualification; zero totals do not qualify |
+
+`grossAmount` and `usableAmount` are mutually exclusive. Bridge mint and burn
+amounts are also mutually exclusive. `v2_new_position.plannedMintAmount` and
+`v2_clone_position.initialMint` are gross local amounts. Clone `expiration` is
+the absolute child expiration, not a duration and not the parent's current fee
+expiration.
+
+Example existing-position read:
+
+```json
+{
+  "code": "USD",
+  "position": "<position-address>",
+  "caller": "<caller-address>",
+  "recipient": "<recipient-address>",
+  "usableAmount": "100"
+}
+```
+
+Example source-bridge mint read:
+
+```json
+{
+  "code": "USD",
+  "account": "<account-address>",
+  "mintSourceAmount": "25.5"
+}
+```
+
+Replace every placeholder with a real explicitly supplied address.
+The server does not invent deployment addresses, discover positions, or enumerate
+challenge history.
+
+### New-proposal validity and planned-mint review
+
+For `v2_new_position`, `valid` means only that the opening terms and funding are
+valid. The adjacent `validityScope` states this explicitly as `opening terms and
+funding only; not later mint eligibility`. `openPosition` does not mint
+immediately.
+
+When `plannedMintAmount` produces an illustrative quote, `plannedMintReview`
+separately checks:
+
+- `openingTermsAndFunding`: the opening-scoped `valid` value;
+- `capacity`: `grossAmount <= terms.mintingMaximum`;
+- `overflowSafe`: both the collateral-value and required-backing products fit
+  uint256;
+- `backing`: overflow-safe `initialCollateral * liquidationPrice >= grossAmount
+  * 1e18`, using raw integers; and
+- `positiveUsableAmount`: `usableAmount > 0`.
+
+`plannedMintReview.eligible` is true only when opening validity and every review
+check pass. Gross and usable amounts, the minting maximum, and the two 36-decimal
+backing products include raw integer strings and exact formatted values. If no
+quote was requested or one is unavailable, review eligibility is `null`, checks
+are unavailable, and `unavailableReason` explains that no future-mint eligibility
+was inferred. The review describes a possible later mint using current reads and
+assumed timestamps; it requires fresh position state and a requote after opening
+and is not transaction simulation or authorization.
+
+### Deployment evidence versus current reads
+
+`deploymentEvidence` contains registry source/rate evidence, constructor args,
+and (in `instance_state`) transactions and postconditions. It is explicitly not
+current chain state. `currentReads` contains SDK snapshots. A configured initial
+savings rate is not presented as the current rate. Run `v2_verify` before treating
+a supplied registry as a verified live contract set; successful verification is
+still not a production endorsement or an audit.
+
+### Challenges, expiry, and settlement
+
+`v2_challenge.active` is labelled `firstPhaseActive` in the formatted view. It
+means only that the source-block timestamp is within the first challenge phase.
+`settlementComplete` is always `null`: inactive or empty does not prove complete
+settlement. There is no keeper service, auction-outcome reconstruction, or hidden
+log enumeration. Legacy `list_challenges` therefore rejects V2 and directs the
+caller to `v2_challenge` with an explicit index. Position expiry and expired
+purchase price are available in `position_state` and `v2_position_mint`.
+
+## V2 read-only boundary
+
+Protocol V2 has no write or fee-quote path in this integration. The following
+legacy tools deterministically throw an error containing **"disabled in V2
+read-only integration"** before signer lookup, fee sampling, RPC/staticCall, or
+send, for both `dryRun: true` and `dryRun: false`:
+
+- `mint`
+- `launch_challenge`
+- `place_bid`
+- `open_position`
+- `guardian_pause`
+- `guardian_schedule_unpause`
+- `guardian_unpause`
+- `fee_quote`
+
+The guardian errors additionally say legacy V1 only. V2 never calls
+`guardianState`, `bootstrapState`, admission-guardian methods, or an allocation
+minter/bootstrap. Guardian calldata is never redirected to a V2 MintingHub.
+
+Quotes and eligibility are planning data. In particular, repayment's full
+candidate is not a promise of complete repayment, repayment does not establish
+withdrawal eligibility, and new-proposal reads cannot prove a collateral token's
+non-view transfer behavior. Separately authorized simulation/execution tooling
+would be required for those guarantees; it is not included here.
+
+## Legacy V1 tools
+
+Legacy behavior remains available only when the legacy registry was explicitly
+selected (including the unchanged default). Amounts continue to use the legacy
+human-unit conventions. Position minimum/challenged collateral and challenge
+sizes now correctly use the position collateral's decimals rather than local
+18-decimal units; liquidation prices use `36 - collateralDecimals`.
+
+### Reads
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `list_instances` | — | all 11 instances: symbol, token address, total supply, minter reserve, equity share price, guardian paused + admission-gate state |
-| `instance_state` | `code` | full snapshot: token supply/minterReserve/registered minters, equity price/shares, bootstrap status, guardian + timelock state, admission gate |
-| `position_state` | `code`, `positionAddress` | collateral, liquidation price, limit, minted, available-for-minting, cooldown/mintable state, derived minting fee + reserve contribution, `isMintable` |
-| `list_challenges` | `code`, optional `position` | open challenges: number, challenger, size, deadline, active flag |
-| `fee_quote` | `code`, `tool` | estimated total tx fee in DOGE (L1 data + L2 exec) for any write tool, plus the current per-byte rate vs the 7.1e-5 baseline and `regimeShift` warning |
+| `list_instances` | — | Legacy token supply/reserve, equity price, guardian and admission-gate state |
+| `instance_state` | `code` | Legacy token/equity/bootstrap/guardian/timelock state |
+| `position_state` | `code`, `positionAddress` | Legacy position state and derived fee/reserve information |
+| `list_challenges` | `code`, optional `position` | Legacy open challenges with exact collateral size formatting |
+| `fee_quote` | `code`, `tool` | Sampled L1-data plus L2-execution fee estimate in DOGE |
 
-### Write tools (signer required; `dryRun` defaults to `true`)
+### Writes (`dryRun` defaults to `true`)
 
-With `dryRun: true` the tool runs `staticCall` only — no tx is sent — and
-returns what **would** happen plus a fee quote. With `dryRun: false` the tool
-enforces the fee-regime abort rule, sends the transaction, and reports the
-**actual** L1-inclusive total fee from the mined receipt plus the resulting
-state deltas.
+| Tool | Signer | Arguments |
+|---|---|---|
+| `mint` | treasury | `code`, `position`, `amount`, `dryRun?` |
+| `launch_challenge` | bot | `code`, `position`, `size`, `bid`, `dryRun?` |
+| `place_bid` | bot | `code`, `challengeNumber`, `size`, `postpone?`, `dryRun?` |
+| `guardian_pause` | guardian | `code`, `dryRun?` |
+| `guardian_schedule_unpause` | guardian | `code`, `dryRun?` |
+| `guardian_unpause` | guardian | `code`, `dryRun?` |
+| `open_position` | treasury | `code`, `collateralToken`, `minAmount`, `minCollateral`, `initialCollateral`, `liqPrice`, `durationSeconds`, optional `feePPM`, `initPeriodSeconds`, `challengePeriodSeconds`, `reserveContributionPPM`, `dryRun?` |
 
-| Tool | Signer | Arguments | Returns |
-|---|---|---|---|
-| `mint` | treasury | `code`, `position`, `amount`, `dryRun?` | `positionState` minted/available delta + actual total fee |
-| `launch_challenge` | bot | `code`, `position`, `size` (collateral units), `bid` (K9XXX), `dryRun?` | challenge number from `ChallengeStarted` |
-| `place_bid` | bot | `code`, `challengeNumber`, `size`, `postpone?`, `dryRun?` | whether the bid closed the challenge (`ChallengeSucceeded` presence) |
-| `guardian_pause` | guardian | `code`, `dryRun?` | guardian state after |
-| `guardian_schedule_unpause` | guardian | `code`, `dryRun?` | guardian state after (unpause available at = now + timelock) |
-| `guardian_unpause` | guardian | `code`, `dryRun?` | guardian state after |
-| `open_position` | treasury | `code`, `collateralToken`, `minAmount` (= minting maximum), `minCollateral`, `initialCollateral`, `liqPrice`, `durationSeconds`, optional `feePPM` (default 0), `initPeriodSeconds` (432000), `challengePeriodSeconds` (86400), `reserveContributionPPM` (100000), `dryRun?` | new position address from `PositionOpened` |
+On the legacy path only, `dryRun: true` runs `staticCall` and returns a fee quote;
+`dryRun: false` enforces the fee-regime guard, sends, and reports the mined
+receipt's actual L1-inclusive fee. A status-0 receipt is surfaced as an MCP
+error, never a success-shaped payload. The test suite mocks these paths and does
+not invoke live writes.
 
-Liquidation prices carry `36 − collateral.decimals` decimals; `open_position`
-reads the collateral's decimals from chain and parses accordingly. Collateral
-amounts for challenges/bids are parsed with the position collateral's actual
-decimals (wDOGE is 8-dec; MOFX 18-dec).
+The legacy fee model samples recent mined transactions because the OP-stack
+GasPriceOracle is not wired on Chikyu. It fits `l1Fee ≈ fixed + perByte × bytes`,
+uses static per-tool L2 gas estimates, rejects outliers and insufficient samples,
+and aborts sends when either the per-byte rate or median total L1 fee exceeds 2×
+baseline. `DOGEFOREX_BASELINE_TOTAL` can set the total baseline explicitly.
 
-## Known deviations
+## Tests and limitations
 
-- The L1 fee quote samples recent mined transactions
-  (`l1Fee ≈ fixed + perByte·bytes`) because the OP-stack GasPriceOracle
-  predeploy is not wired on Chikyu (calls return empty). Sampled quotes match
-  the ops-runbook methodology (`deployments/k9usd.chikyu.json` `feePreflight`).
-  The L2 component uses static per-tool gas estimates — immaterial next to the
-  dominant L1 data fee on this chain.
+Default `npm test` is entirely offline: registry shapes/staged subsets, exact
+formatting, every V2 read tool, disabled-write barriers, error states, fee math,
+and legacy read/write regressions use local fixtures or mocks. No test is marked
+as a live V2 connection.
 
-## Tests
+The pre-existing legacy Chikyu read-only smoke suite is opt-in:
 
-`npm test` (vitest) runs two suites:
+```sh
+DOGEOS_LIVE_TESTS=1 npm test -- test/smoke.test.ts
+```
 
-- **offline unit tests** (no network): fee-regime math — synthetic sample
-  batches covering the slope and total guards, 12×-spike outlier rejection,
-  and the fail-closed paths (`test/fee-regime.test.ts`); and the write path
-  with the SDK client and chain sampler mocked at the module boundary —
-  reverted on-chain writes must return an `isError` result, never a
-  success-shaped payload (`test/write-path.test.ts`).
-- **live smoke test** against the testnet (read-only): instantiates the tool
-  handlers directly (no stdio) and
-  runs `list_instances`, `instance_state(EUR)`, and `fee_quote(EUR, mint)`
-against the live testnet, read-only. It also verifies that write tools called
-without signer env vars fail fast, naming the missing variable, without
-touching the chain. The EUR guardian may be paused intermittently during ops
-rehearsals — the test reports the value but never asserts `paused === false`.
+It is not run by default and does not broadcast transactions. There is no live
+V2 smoke test because no real V2 registry/deployment is available.
 
-## Security
+Remaining boundaries: no verified live V2 deployment identity or RPC
+reconciliation, no V2 transaction simulation/signing/writes, no position or
+challenge discovery, no settlement/keeper service, and no browser frontend in
+this package.
 
-See [SECURITY.md](SECURITY.md). Role keys are testnet throwaways; still treat
-them as secrets (env vars only, never committed).
+See [SECURITY.md](SECURITY.md) for security guidance.

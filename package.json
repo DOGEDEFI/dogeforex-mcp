@@ -1,7 +1,7 @@
 {
   "name": "@dogeforex/mcp",
-  "version": "0.1.0",
-  "description": "MCP server for DogeForex — lets AI agents operate the multi-instance stablecoin protocol on DogeOS Chikyu testnet",
+  "version": "0.2.0",
+  "description": "MCP server for the International Multicurrency Framework — read-only V2 planning plus separately preserved legacy V1 tools",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -30,14 +30,15 @@
     "@dogeforex/sdk": "file:../dogeforex-sdk-ts",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "ethers": "^6.13.0",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.8"
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.12.0"
   }
 }

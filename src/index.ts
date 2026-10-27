@@ -4,7 +4,7 @@ import { loadConfig } from './config.js';
 import { createMcpServer } from './server.js';
 
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = await loadConfig();
   const server = createMcpServer(config);
   await server.connect(new StdioServerTransport());
 
@@ -13,14 +13,14 @@ async function main(): Promise<void> {
     .filter((r) => config.signers[r] !== null)
     .join(', ');
   console.error(
-    `dogeforex-mcp 0.1.0 | stdio | chain=${config.registry.chainId} (${config.registry.chainName}) | ` +
-      `rpc=${config.rpcUrl} | registry=${config.registryPath} | signers configured: ${roles || 'none'}`,
+    `dogeforex-mcp 0.2.0 | stdio | generation=${config.protocolGeneration} | chain=${config.chainId} (${config.network}) | ` +
+      `rpc=${config.rpcUrl} | registry=${config.registryPath} | signers configured: ${roles || 'none'}${config.protocolGeneration === 'v2' ? ' | read-only' : ''}`,
   );
   config.provider
     .getNetwork()
     .then((n) => {
-      if (n.chainId !== BigInt(config.registry.chainId)) {
-        console.error(`WARNING: RPC chainId ${n.chainId} does not match registry chainId ${config.registry.chainId}`);
+      if (n.chainId !== BigInt(config.chainId)) {
+        console.error(`WARNING: RPC chainId ${n.chainId} does not match registry chainId ${config.chainId}`);
       }
     })
     .catch((err: unknown) => console.error(`WARNING: could not verify RPC chain id: ${err instanceof Error ? err.message : String(err)}`));

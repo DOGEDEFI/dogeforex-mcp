@@ -1,8 +1,6 @@
-// Live read-only smoke test against DogeOS Chikyu testnet.
-// Instantiates the tool handlers directly (no stdio). No signer env vars are
-// set, so write tools must fail fast naming the missing env var — proving the
-// key-less path never touches the chain. EUR guardian paused state is
-// REPORTED but never asserted (ops rehearsals pause it intermittently).
+// Opt-in legacy V1 live read-only smoke test against DogeOS Chikyu testnet.
+// Default npm test skips this suite without loading config or touching RPC.
+// No signer env vars are set, so write tools must fail fast before chain access.
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -10,19 +8,19 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { buildTools, type ToolDef } from '../src/tools.js';
 
+const RUN_LIVE = process.env.DOGEOS_LIVE_TESTS === '1';
 const here = dirname(fileURLToPath(import.meta.url));
 const registryPath = resolve(here, '../../dogeforex-protocol/deployments/k9usd.chikyu.json');
-
-// Explicit env object: no signer keys, default public RPC.
-const config = loadConfig({ DOGEOS_REGISTRY_PATH: registryPath });
-const tools = buildTools(config);
+const tools: Record<string, ToolDef> = RUN_LIVE
+  ? buildTools(await loadConfig({ DOGEOS_REGISTRY_PATH: registryPath }))
+  : {};
 
 async function call(def: ToolDef, args: unknown): Promise<any> {
   const parsed = z.object(def.inputSchema).parse(args);
   return def.handler(parsed);
 }
 
-describe('dogeforex-mcp smoke (live testnet, read-only)', () => {
+describe.skipIf(!RUN_LIVE)('dogeforex-mcp legacy V1 smoke (opt-in live testnet, read-only)', () => {
   it('list_instances returns all 11 instances with live state', async () => {
     const res = await call(tools.list_instances!, {});
     expect(res.count).toBe(11);
