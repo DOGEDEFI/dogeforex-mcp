@@ -57,7 +57,7 @@ const IFACE_GUARDIAN = new Interface(GUARDIAN_TIMELOCK_ABI);
 // argument schemas
 // ---------------------------------------------------------------------------
 
-const sCode = z.string().min(3).max(4).describe('Currency code: USD, EUR, JPY, GBP, AUD, CNY, BRL, PKR, BDT, INR, NGN');
+const sCode = z.string().min(3).max(4).describe('Currency code: USD, EUR, JPY, GBP, AUD, CNY, BRL, PKR, BDT, INR, NGN, CHF');
 const sAddress = z
   .string()
   .refine((v) => {
