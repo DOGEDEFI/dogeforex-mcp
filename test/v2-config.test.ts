@@ -96,4 +96,20 @@ describe('V2 registry configuration (synthetic offline fixtures)', () => {
     const path = writeJson('malformed.json', malformed);
     await expect(loadConfig({ DOGEOS_REGISTRY_PATH: path })).rejects.toThrow(/network must be a non-empty string/);
   });
+
+  it('loads the real Chikyu V2 directory with all 12 currencies and no signer configuration', async () => {
+    const registryPath = resolve(here, '../../dogeforex-protocol/scripts/deployment/deployments/chikyuV2');
+    const config = asV2(await loadConfig({
+      DOGEOS_REGISTRY_PATH: registryPath,
+      DOGEOS_RPC_URL: 'http://offline.invalid',
+      DOGEFOREX_TREASURY_KEY: 'not-a-key',
+      DOGEFOREX_GUARDIAN_KEY: 'not-a-key',
+      DOGEFOREX_BOT_KEY: 'not-a-key',
+      DOGEFOREX_DEPLOYER_KEY: 'not-a-key',
+    }));
+    expect(config.registry.codes).toEqual(['AUD', 'BDT', 'BRL', 'CHF', 'CNY', 'EUR', 'GBP', 'INR', 'JPY', 'NGN', 'PKR', 'USD']);
+    expect(config.network).toBe('chikyuV2');
+    expect(config.chainId).toBe(6_281_971);
+    expect(Object.values(config.signers)).toEqual([null, null, null, null]);
+  });
 });

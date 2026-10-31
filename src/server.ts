@@ -34,8 +34,18 @@ export function toToolResult(result: unknown): ToolResponse {
   return { content: [{ type: 'text' as const, text: JSON.stringify(result, jsonReplacer, 2) }] };
 }
 
+function instructionsFor(config: McpConfig): string {
+  if (config.protocolGeneration === 'legacy') {
+    return 'Legacy IMF V1 integration. Keep legacy registry semantics separate from protocol V2. Write-capable legacy tools default to dryRun: true and require separately configured signer roles; never infer confirmation from a quote or dry run.';
+  }
+  return 'International Money Foundry (IMF) V2 agent integration. Use v2_verify(code) before relying on current reads. Each currency is independent: never sum native units or infer shared reserves across currencies. Preserve protocolGeneration, network, chainId, code, sourceBlock and raw integer strings in answers. Unknown, failed, stale or missing reads are not zero. list_instances, instance_state, position_state and v2_* tools provide current reads and non-executable plans. Quotes, eligibility and planning output are not transaction simulation, authorization or execution. V2 is read-only: never request private keys, sign, broadcast, run keepers or imply human approval. Separately authorized guided wallet writes belong to the IMF app, not this MCP server.';
+}
+
 export function createMcpServer(config: McpConfig): McpServer {
-  const server = new McpServer({ name: 'dogeforex-mcp', version: '0.2.0' });
+  const server = new McpServer(
+    { name: 'dogeforex-mcp', version: '0.2.0' },
+    { instructions: instructionsFor(config) },
+  );
   const tools = buildTools(config);
   for (const [name, def] of Object.entries(tools)) {
     server.registerTool(

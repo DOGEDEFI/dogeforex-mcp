@@ -220,8 +220,23 @@ export async function executeWriteTx<T>(
 // tool table
 // ---------------------------------------------------------------------------
 
+const V2_LEGACY_TOOL_NAMES = new Set([
+  'list_challenges',
+  'fee_quote',
+  'mint',
+  'launch_challenge',
+  'place_bid',
+  'open_position',
+  'guardian_pause',
+  'guardian_schedule_unpause',
+  'guardian_unpause',
+]);
+
 export function buildTools(config: McpConfig): Record<string, ToolDef> {
-  return config.protocolGeneration === 'v2' ? buildV2Tools(config) : buildLegacyTools(config);
+  if (config.protocolGeneration === 'legacy') return buildLegacyTools(config);
+  return Object.fromEntries(
+    Object.entries(buildV2Tools(config)).filter(([name]) => !V2_LEGACY_TOOL_NAMES.has(name)),
+  );
 }
 
 function buildLegacyTools(config: LegacyMcpConfig): Record<string, ToolDef> {

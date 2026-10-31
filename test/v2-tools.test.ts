@@ -10,7 +10,8 @@ import {
   V2ReadError,
 } from '@dogeforex/sdk/v2';
 import type { V2McpConfig } from '../src/config.js';
-import { buildTools, type ToolDef } from '../src/tools.js';
+import type { ToolDef } from '../src/tools.js';
+import { buildV2Tools } from '../src/v2-tools.js';
 import { makeV2Artifact } from './v2-fixtures.js';
 import { makeProtocolMock } from './v2-mock.js';
 
@@ -55,7 +56,7 @@ function newPositionArgs(mock: Mock): Record<string, unknown> {
 describe('V2 instance and position reads (synthetic offline RPC)', () => {
   it('lists current state and five minters without guardian/bootstrap calls', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const list = await call(tools.list_instances!, {});
     expect(list.protocolGeneration).toBe('v2');
     expect(list.network).toBe('synthetic-v2');
@@ -84,7 +85,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 
   it('uses exact collateral decimals and returns complete eligibility for position_state', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const result = await call(tools.position_state!, {
       code: 'USD', positionAddress: mock.positionAddress, grossAmount: '1000',
     });
@@ -109,7 +110,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 
   it('verifies links and reads complete new-proposal terms, funding, and illustrative quotes', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const verified = await call(tools.v2_verify!, { code: 'USD' });
     expect(verified.formatted.verified).toBe(true);
     expect(verified.formatted.checkedAddresses).toHaveLength(8);
@@ -151,7 +152,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 
   it('reviews planned future mint capacity, backing, and overflow separately from opening validity', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const large = await call(tools.v2_new_position!, { ...newPositionArgs(mock), plannedMintAmount: '200000' });
     expect(large.valid).toBe(true);
     expect(large.formatted.valid).toBe(true);
@@ -187,7 +188,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 
   it('uses parent collateral decimals, family capacity, and absolute child expiration for clones', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const expiration = mock.provider.blockTimestamp + 10n * 86_400n;
     const result = await call(tools.v2_clone_position!, {
       code: 'USD',
@@ -208,7 +209,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 
   it('separates wallet repayment, debt reduction, withdrawal, and closure', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const repayment = await call(tools.v2_repayment!, {
       code: 'USD', position: mock.positionAddress, caller: mock.caller, amount: '100',
     });
@@ -240,7 +241,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 
   it('keeps first-phase challenge activity distinct from unknown settlement', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const empty = await call(tools.v2_challenge!, { code: 'USD', challengeIndex: '0' });
     expect(empty.formatted.empty).toBe(true);
     expect(empty.formatted.firstPhaseActive).toBe(false);
@@ -265,7 +266,7 @@ describe('V2 instance and position reads (synthetic offline RPC)', () => {
 describe('V2 module reads (synthetic offline RPC)', () => {
   it('formats source bridge mints, burns, credits, and local remainders exactly', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const mint = await call(tools.v2_bridge!, { code: 'USD', account: mock.caller, mintSourceAmount: '1' });
     expect(mint.formatted.mintPlan.sourceAmount).toMatchObject({ raw: '1000000', value: '1.0', decimals: 6, unit: 'sUSDC' });
     expect(mint.formatted.mintPlan.localAmount).toMatchObject({ raw: `1${'0'.repeat(18)}`, value: '1.0', decimals: 18 });
@@ -284,7 +285,7 @@ describe('V2 module reads (synthetic offline RPC)', () => {
 
   it('reads savings, equity quotes, and account clocks without confusing units', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const savings = await call(tools.v2_savings!, { code: 'USD', account: mock.caller });
     expect(savings.formatted.currentRatePPM).toMatchObject({ raw: '20000', value: '2.0', unit: 'percent' });
     expect(savings.formatted.account.saved).toMatchObject({ value: '500.0', unit: 'sUSD' });
@@ -302,7 +303,7 @@ describe('V2 module reads (synthetic offline RPC)', () => {
 
   it('requires governance caller context and preserves the strict vote boundary and zero-vote behavior', async () => {
     const mock = makeProtocolMock();
-    const tools = buildTools(makeConfig(mock));
+    const tools = buildV2Tools(makeConfig(mock));
     const zero = await call(tools.v2_governance!, { code: 'USD', caller: mock.caller });
     expect(zero.qualified).toBe(false);
     expect(zero.formatted.relativeVotes).toBeNull();
@@ -322,20 +323,20 @@ describe('V2 module reads (synthetic offline RPC)', () => {
 describe('V2 errors and read-only write barriers (synthetic offline RPC)', () => {
   it('surfaces wrong-chain, missing-code, failed-read, and invalid-quote states', async () => {
     const wrong = makeProtocolMock(2);
-    await expect(call(buildTools(makeConfig(wrong)).v2_savings!, { code: 'USD' })).rejects.toBeInstanceOf(V2ChainMismatchError);
+    await expect(call(buildV2Tools(makeConfig(wrong)).v2_savings!, { code: 'USD' })).rejects.toBeInstanceOf(V2ChainMismatchError);
 
     const missing = makeProtocolMock();
     missing.provider.setCode(missing.instance.bridge, '0x');
-    await expect(call(buildTools(makeConfig(missing)).v2_verify!, { code: 'USD' })).rejects.toBeInstanceOf(V2MissingCodeError);
+    await expect(call(buildV2Tools(makeConfig(missing)).v2_verify!, { code: 'USD' })).rejects.toBeInstanceOf(V2MissingCodeError);
 
     const failed = makeProtocolMock();
     failed.provider.onCall(failed.instance.token, V2_TOKEN_ABI, 'totalSupply()', () => {
       throw new Error('synthetic offline RPC failure');
     });
-    await expect(call(buildTools(makeConfig(failed)).list_instances!, {})).rejects.toBeInstanceOf(V2ReadError);
+    await expect(call(buildV2Tools(makeConfig(failed)).list_instances!, {})).rejects.toBeInstanceOf(V2ReadError);
 
     const invalid = makeProtocolMock();
-    await expect(call(buildTools(makeConfig(invalid)).position_state!, {
+    await expect(call(buildV2Tools(makeConfig(invalid)).position_state!, {
       code: 'USD', positionAddress: invalid.positionAddress, grossAmount: '1', usableAmount: '1',
     })).rejects.toThrow(/mutually exclusive/);
   });
@@ -343,7 +344,7 @@ describe('V2 errors and read-only write barriers (synthetic offline RPC)', () =>
   it('disables every V2 write and fee quote before signer lookup, fee sampling, staticCall, or send', async () => {
     const mock = makeProtocolMock();
     const config = makeConfig(mock);
-    const tools = buildTools(config);
+    const tools = buildV2Tools(config);
     const send = vi.spyOn(mock.provider, 'send');
     const cases: Array<[string, Record<string, unknown>]> = [
       ['mint', { code: 'USD', position: mock.positionAddress, amount: '1' }],

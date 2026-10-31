@@ -1,37 +1,87 @@
-# dogeforex-mcp
+# IMF agent-ready MCP
 
-MCP (Model Context Protocol) server for the International Multicurrency
-Framework (IMF), extending Frankencoin mechanics across independent currency
-systems. Version **0.2.0** has two deliberately separate protocol paths:
+`@dogeforex/mcp` is the local Model Context Protocol server for the
+**International Money Foundry (IMF)**. It gives agents verified V2 reads and
+exact, non-executable planning through `@dogeforex/sdk/v2` across the 12
+configured DogeOS Chikyū testnet currencies. No private key is needed for V2.
 
-- **Protocol V2:** exact, provider-only reads and planning through
-  `@dogeforex/sdk/v2`. No guardian/bootstrap compatibility layer, signer,
-  transaction simulation, or writes.
+Two deliberately separate protocol paths remain:
+
+- **Protocol V2:** 14 advertised read/plan tools, exact units, source-block
+  provenance, and no signer, transaction simulation, writes, keeper, or
+  guardian/bootstrap compatibility layer.
 - **Legacy V1:** the original registry, guardian/bootstrap reads, fee model, and
   signer/write tools remain available separately. Its
   `dogeforex.registry/v2` schema label is a legacy registry-schema version; it
   does **not** mean protocol V2.
 
 The SDK is linked from `../dogeforex-sdk-ts` and imported from its built `dist`.
-No real V2 deployment or registry is supplied with this repository. Synthetic
-fixtures and mocked RPC in the tests are not live deployment verification.
+Synthetic fixtures and mocked RPC in the default tests are not live deployment
+verification; the opt-in V2 live suite below uses the real testnet registry.
 
-## Install, verify, and run
+## Agent-ready V2 quickstart
+
+Use Node 22 and keep `dogeforex-sdk-ts`, `dogeforex-mcp`, and
+`dogeforex-protocol` as sibling directories. Build the SDK first, then verify
+and build the MCP server:
 
 ```sh
+cd dogeforex-sdk-ts
+npm install
+npm run build
+
+cd ../dogeforex-mcp
 npm install
 npm run typecheck
-npm test             # offline by default; no RPC or live writes required
-npm run build        # tsc -> dist (ESM, strict)
-node dist/index.js   # MCP over stdio
+npm test
+npm run build
 ```
 
-All diagnostics go to **stderr**; stdout carries MCP. Example client config:
+Add this to an MCP client, replacing only the absolute package path:
 
 ```json
 {
   "mcpServers": {
-    "dogeforex": {
+    "imf": {
+      "command": "npm",
+      "args": [
+        "--prefix",
+        "/absolute/path/to/dogeforex-mcp",
+        "run",
+        "start:v2"
+      ]
+    }
+  }
+}
+```
+
+The client launches the server over **stdio**. `start:v2` selects
+`../dogeforex-protocol/scripts/deployment/deployments/chikyuV2` and
+`https://rpc.testnet.dogeos.com`, loading all 12 actual V2 artifacts with no
+signer environment variables. This is a local MCP server, not a hosted remote
+endpoint. All diagnostics go to **stderr**; stdout carries MCP.
+
+Useful first prompts:
+
+1. `Use v2_verify for USD and CHF. Report the chain, source block, and any failed check.`
+2. `Use list_instances to compare all 12 systems in native units. Do not total unlike currencies.`
+3. `Use v2_savings for CHF and explain the current and next rate without treating it as a quote.`
+4. `Use position_state for this explicit position address and preserve unknown eligibility as unknown.`
+
+During MCP initialization the server supplies instructions covering verification,
+exact raw integers, source blocks, independent currency systems, read health,
+and the read-only authority boundary. Only the 14 V2 read/plan tools are
+advertised; legacy write and log-enumeration tools are not registered for V2.
+
+## Custom registry configuration
+
+For another registry or RPC, run `node dist/index.js` with explicit environment
+variables instead of `start:v2`:
+
+```json
+{
+  "mcpServers": {
+    "imf-custom": {
       "command": "node",
       "args": ["/absolute/path/to/dogeforex-mcp/dist/index.js"],
       "env": {
@@ -45,7 +95,8 @@ All diagnostics go to **stderr**; stdout carries MCP. Example client config:
 
 Replace the example RPC with the endpoint for the registry's actual network.
 The server checks the registry network key and chain ID independently; a matching
-chain ID alone never identifies protocol V2.
+chain ID alone never identifies protocol V2. Running `node dist/index.js`
+without `DOGEOS_REGISTRY_PATH` preserves the legacy V1 default.
 
 ## Registry configuration
 
@@ -213,29 +264,22 @@ still not a production endorsement or an audit.
 means only that the source-block timestamp is within the first challenge phase.
 `settlementComplete` is always `null`: inactive or empty does not prove complete
 settlement. There is no keeper service, auction-outcome reconstruction, or hidden
-log enumeration. Legacy `list_challenges` therefore rejects V2 and directs the
-caller to `v2_challenge` with an explicit index. Position expiry and expired
-purchase price are available in `position_state` and `v2_position_mint`.
+log enumeration. Legacy `list_challenges` is not advertised for V2; use
+`v2_challenge` with an explicit index. Position expiry and expired purchase
+price are available in `position_state` and `v2_position_mint`.
 
 ## V2 read-only boundary
 
-Protocol V2 has no write or fee-quote path in this integration. The following
-legacy tools deterministically throw an error containing **"disabled in V2
+Protocol V2 advertises only the 14 read/plan tools: no write, fee-quote, or
+legacy log-enumeration path is registered. The internal legacy compatibility
+handlers remain defense-in-depth and deterministically throw **"disabled in V2
 read-only integration"** before signer lookup, fee sampling, RPC/staticCall, or
-send, for both `dryRun: true` and `dryRun: false`:
+send for `mint`, `launch_challenge`, `place_bid`, `open_position`, all three
+guardian writes, and `fee_quote`, with either `dryRun` value.
 
-- `mint`
-- `launch_challenge`
-- `place_bid`
-- `open_position`
-- `guardian_pause`
-- `guardian_schedule_unpause`
-- `guardian_unpause`
-- `fee_quote`
-
-The guardian errors additionally say legacy V1 only. V2 never calls
-`guardianState`, `bootstrapState`, admission-guardian methods, or an allocation
-minter/bootstrap. Guardian calldata is never redirected to a V2 MintingHub.
+V2 never calls `guardianState`, `bootstrapState`, admission-guardian methods, or
+an allocation minter/bootstrap. Guardian calldata is never redirected to a V2
+MintingHub.
 
 Quotes and eligibility are planning data. In particular, repayment's full
 candidate is not a promise of complete repayment, repayment does not establish
@@ -287,23 +331,29 @@ baseline. `DOGEFOREX_BASELINE_TOTAL` can set the total baseline explicitly.
 
 ## Tests and limitations
 
-Default `npm test` is entirely offline: registry shapes/staged subsets, exact
-formatting, every V2 read tool, disabled-write barriers, error states, fee math,
-and legacy read/write regressions use local fixtures or mocks. No test is marked
-as a live V2 connection.
+Default `npm test` is entirely offline: real registry shapes/staged subsets,
+MCP initialization/tool discovery, exact formatting, every V2 read tool,
+disabled-write barriers, error states, fee math, and legacy read/write
+regressions use local fixtures or mocks. The real `chikyuV2` directory is also
+checked offline for all 12 currencies and zero signer configuration.
 
-The pre-existing legacy Chikyu read-only smoke suite is opt-in:
+The V2 live testnet suite is opt-in and read-only:
+
+```sh
+DOGEOS_LIVE_V2_TESTS=1 npm test -- test/v2-live.test.ts
+```
+
+It verifies all 12 real registries and lists current source-block state for all
+12 systems while asserting that no signing or broadcast RPC method is used.
+The pre-existing legacy Chikyu read-only smoke suite is separately available:
 
 ```sh
 DOGEOS_LIVE_TESTS=1 npm test -- test/smoke.test.ts
 ```
 
-It is not run by default and does not broadcast transactions. There is no live
-V2 smoke test because no real V2 registry/deployment is available.
-
-Remaining boundaries: no verified live V2 deployment identity or RPC
-reconciliation, no V2 transaction simulation/signing/writes, no position or
-challenge discovery, no settlement/keeper service, and no browser frontend in
-this package.
+Remaining boundaries: no V2 transaction simulation/signing/writes, no position
+or challenge log discovery, no settlement/keeper service, no hosted remote MCP
+endpoint, and no browser frontend in this package. The frontend and static Agent
+workflows guide live in `dogeforex-ui/imf-v2`.
 
 See [SECURITY.md](SECURITY.md) for security guidance.

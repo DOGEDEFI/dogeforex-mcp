@@ -1,7 +1,7 @@
 {
   "name": "@dogeforex/mcp",
   "version": "0.2.0",
-  "description": "MCP server for the International Multicurrency Framework — read-only V2 planning plus separately preserved legacy V1 tools",
+  "description": "Agent-ready MCP server for the International Money Foundry — read-only V2 verification, reads and planning plus separately preserved legacy V1 tools",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -24,7 +24,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "start:v2": "DOGEOS_REGISTRY_PATH=../dogeforex-protocol/scripts/deployment/deployments/chikyuV2 DOGEOS_RPC_URL=https://rpc.testnet.dogeos.com node dist/index.js"
   },
   "dependencies": {
     "@dogeforex/sdk": "file:../dogeforex-sdk-ts",
